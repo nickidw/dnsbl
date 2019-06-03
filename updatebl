@@ -1,0 +1,8 @@
+#remove blacklist entries older than a day
+/usr/local/bin/relaydb -db -m +1 > /dev/null
+#scan mail from last minute
+/root/dnsbl/buildvl
+#build new bind zone file
+/usr/local/bin/relaydb -lb | /root/dnsbl/relaydb2bind bl.astcape.co.za. ns1.astcape.co.za. admin.astcape.co.za. > /var/chroot/named/master/bl.astcape.co.za.hosts
+#reload zone
+/usr/local/sbin/rndc reload bl.astcape.co.za > /dev/null

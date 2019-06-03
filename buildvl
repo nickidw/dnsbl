@@ -1,0 +1,4 @@
+for file in $(find /var/virusmails -cmin 1 \! -name "spam*" -type f \! -name "banned*")
+do
+	cat $file | /usr/local/bin/relaydb -b
+done

@@ -1,0 +1,159 @@
+#!/usr/bin/perl -w
+#
+# spfilter2bind
+#
+# AUTHOR:
+#   Dan Harkless <software@harkless.org>       http://harkless.org/dan/software/
+# 
+# COPYRIGHT:
+#   This file is Copyright (C) 2003 by Dan Harkless, and is released under the
+#   GNU General Public License <http://www.gnu.org/copyleft/gpl.html>.
+#
+# DESCRIPTION:
+#   I wanted to do DNS queries of a locally-mirrored local copy of the spews.org
+#   DNSBL zone available from <http://spfilter.openrbl.org/data/input/SPEWS.bz2>
+#   (and <http://mirror.openrbl.org/spews/SPEWS.bz2>), but due to bugs, I wanted
+#   to avoid using the spfilter.pl script to generate the BIND-compatible zone
+#   file.  Therefore, I wrote spfilter2bind, which doesn't suffer from spfilter
+#   0.59's bugs and is much more lightweight, easy to use, and verifiable as
+#   correct.  Another difference is that spfilter2bind doesn't put TXT records
+#   in the zone file, since those aren't used by sendmail's [enh]dnsbl features.
+#
+#   The script will take a DNSBL file in the format used by spfilter on stdin
+#   and output a BIND zone file on stdout.  Required parameters, in this order,
+#   are the name to give the zone, a colon-separated list of your nameservers,
+#   and your email address with '@' changed to '.'.  These parameters should
+#   contain trailing '.'s, as expected by BIND.
+#
+#   If you wish, you can optionally specify a positive-cache TTL to use (default
+#   is 300).  On top of that, you can also optionally specify the timeouts (as
+#   one quoted commandline parameter or multiple) to use in the SOA record.  Do
+#   not specify the serial number that goes in the SOA -- we generate that
+#   ourselves using time().  If you don't specify the timeouts, we use "10800
+#   3600 604800 86400".
+#
+#   spfilter.pl contains a copy & paste of Net::CIDR's cidr2octets() routine,
+#   but I've chosen to run the function from its module, available from CPAN.
+#
+# USAGE:
+#   % spfilter2bind <zone> <ns1>[:<ns2>...] <admin> [<TTL> [<SOA timeouts>]]
+#
+# EXAMPLES:
+#   % spfilter2bind spews.yourdomain.tld. \
+#   ns1.yourdomain.tld.:ns2.yourdomain.tld. you.yourdomain.tld. < SPEWS > \
+#   /var/named/DNSBLs/spews.yourdomain.tld
+#
+#   Here's the same example, wrapped by my run_if_modified script, including the
+#   steps to download and unpack the input file beforehand and then restart the
+#   nameserver afterwards if the zone's been updated.  You would run the
+#   following command as a once-a-day root cron job:
+#
+#   % run_if_modified /var/named/DNSBLs/SPEWS.bz2 \
+#   \
+#   "sudo -u spews_u wget -N -q http://mirror.openrbl.org/spews/SPEWS.bz2 || sud
+#   o -u spews_u wget -N -q http://spfilter.openrbl.org/data/input/SPEWS.bz2 || 
+#   false" \
+#   \
+#   "bzcat SPEWS.bz2 > SPEWS && spfilter2bind spews.yourdomain.tld. ns1.yourdoma
+#   in.tld.:ns2.yourdomain.tld. you.yourdomain.tld. < SPEWS > spews.yourdomain.t
+#   ld && rndc reload"
+#
+# DATE        MODIFICATION
+# ==========  ==================================================================
+# 2003-03-10  Original.
+
+
+## Modules used ################################################################
+use English;         # allow long English names like $PROGRAM_NAME instead of $0
+use File::Basename;  # for basename()
+#use Net::CIDR;       # for cidr2octects()
+
+
+## Subroutines #################################################################
+sub error {
+    print STDERR @ARG;
+    $had_an_error = 1;
+}
+
+sub reverse_DNS {
+    my $netblock = shift;
+    my ($a,$b,$c,$d) = split(/\./, $netblock);
+
+    if (defined $d) {
+	return "$d.$c.$b.$a";
+    }
+    elsif (defined $c) {
+	return "*.$c.$b.$a";
+    }
+    elsif (defined $b) {
+	return "*.$b.$a";
+    }
+    else {
+	error "$progname: Bad input to reverse_DNS(): '$netblock'\n";
+    }
+}
+
+
+## Main ########################################################################
+$progname = basename($PROGRAM_NAME);
+
+if (scalar @ARGV < 3) {
+    error "Usage:",
+      " $progname <zone> <ns1>[:<ns2>...] <admin> [<TTL> [<SOA timeouts>]]\n";
+    exit 1;
+}
+
+$zone = shift;
+
+@nameservers = split(/:/, shift());
+
+$admin = shift;
+
+if (@ARGV) {
+    $TTL = shift;
+}
+else {
+    $TTL = 86400;
+}
+
+if (@ARGV) {
+    $SOA_timeouts = @ARGV;
+}
+else {
+    @SOA_timeouts = (10800, 3600, 604800, 86400);
+}
+
+print "\$TTL $TTL\n\n";
+print "$zone SOA $nameservers[0] $admin (", time(), " @SOA_timeouts)\n\n";
+print "\$ORIGIN $zone\n\n";
+foreach $nameserver (@nameservers) {
+    print "\t\tNS $nameserver\n";
+}
+print "\n";
+print "2.0.0.127\tA 127.0.0.2\n";
+
+$line_number = 1;
+
+while (<STDIN>) {
+    if (/^(\d+\.\d+\.\d+\.\d+)/) {
+    	print reverse_DNS($1), "\tIN\tA 127.0.0.2\n";
+    	print "\t\tTXT \"Blacklisted as virus sender\"\n";
+    }
+    elsif (! /^\#/) {  # the backslash is just to make Emacs' CPerl mode happy
+	chomp $ARG;
+	error "$progname: Line $line_number is badly formatted: '$ARG'\n";
+    }
+
+    $line_number++;
+}
+
+# For easy verification that we produce the same output (modulo TXT lines and
+# the header) as spfilter.pl, we mimic its sorting, which is the default ASCII
+# sort rather than numeric.
+#foreach $netblock (sort keys %netblock_hash) {
+#    print reverse_DNS($netblock), "\tA 127.0.0.2\n";
+#}
+
+if ($had_an_error) {
+    exit 1;
+}
